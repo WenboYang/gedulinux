@@ -10,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <asm/uaccess.h> 
 
 #define DEV_DATA_LENGTH  100
 #define NUM_DEVICES      6
@@ -117,17 +118,63 @@ DEFINE_SIMPLE_ATTRIBUTE(df_age_fops, lll_age_get, lll_age_set, "%llu\n" );
 
 static int huadeng_open(struct inode *inode, struct file *file )
 {
+	struct huadeng_dev *hd_devp;
+	pr_info("%s\n", __func__);
+	printk("i'm being openned!\n" );
+
+	/* Get the per-device structure that contains this cdev */
+	hd_devp = container_of(inode->i_cdev, struct huadeng_dev, lll_cdev );
+
+	/* Easy access to hd_devp from rest of the entry points */
+	file->private_data = hd_devp;
+
+	/* Initiailize some fileds */
+	hd_devp->size = DEV_DATA_LENGTH;
+	hd_devp->current_pointer = 0;
 	return 0;
 }
 
 static ssize_t huadeng_read(struct file *file, char *buffer, size_t count, loff_t *offset)
 {
-	return 0;
+	struct huadeng_dev *hd_devp = file->private_data;
+	pr_info("%s count %u, +%llu\n", __func__, count, *offset );
+
+	if (*offset >= hd_devp->size) {
+		return 0; /*EOF*/
+	}
+
+        /* Adjust count if its edges past the end of the data region */
+	if (*offset + count > hd_devp->size ) {
+		count = hd_devp->size - *offset;
+	}
+
+	/* Copy the read bits to the user buffer */
+	if (copy_to_user(buffer, (void*)(hd_devp->data + *offset),count) != 0 ) {
+		return -EIO;
+	}
+
+	*offset += count;
+	
+	return count;
 }
 
 static ssize_t huadeng_write(struct file *file, const char *buffer, size_t length, loff_t *offset )
 {
-	return 0;
+	struct huadeng_dev* hp_devp = file->private_data;
+	pr_info("%s %u + %llx\n", __func__, length, *offset);
+	if (*offset >= hp_devp->size) {
+		return 0;
+	}
+	if (*offset + length > hp_devp->size) {
+		length = hp_devp->size - *offset;
+	}
+
+	if (copy_from_user(hp_devp->data + *offset, buffer, length ) != 0) {
+		printk(KERN_ERR "copy_from_user failed\n");
+		return -EFAULT;
+	}
+
+	return length;
 }
 
 static int huadeng_release(struct inode *inode, struct file* file )
@@ -143,10 +190,25 @@ struct file_operations huadeng_fops = {
 	.write   = huadeng_write,
 };
 
+
+static void llaolao_cleanup_devs( void )
+{
+	int i;
+	//struct huadeng_dev* pdev;
+	for ( i = 0; i < NUM_DEVICES; ++i ) {
+		if (hd_devp[i]) {
+			cdev_del(&hd_devp[i]->lll_cdev);
+			device_del(hd_devp[i]->lll_device);
+		}
+		kfree(hd_devp[i]);
+	}
+}
+
 static int __init llaolao_init(void)
 {
 	int n = 0x1937;
 	int i = 0;
+	dev_t first_dev_num; /*first device number*/
 
 	printk(KERN_INFO "Hi, I am llaolao at address 0x%p stack 0x%p.\n", llaolao_init, &n);
 	printk(KERN_INFO "symbol: 0x%pS\n", llaolao_init );
@@ -175,28 +237,23 @@ static int __init llaolao_init(void)
 		}
 		/* Connect the file operations with the cdev */
 		cdev_init(&hd_devp[i]->lll_cdev, &huadeng_fops);
+		first_dev_num = MKDEV(MAJOR_NUM, i );
+		if ( cdev_add( &hd_devp[i]->lll_cdev, first_dev_num, 1 ) ) { 
+			goto out_err;
+		}
+
 		hd_devp[i]->lll_cdev.owner = THIS_MODULE;
 		/* Send uevents to udev, so it'll create /dev nodes */
-		hd_devp[i]->lll_device = device_create(huadeng_class, NULL, MKDEV(MAJOR_NUM, i ), NULL, "huadeng%d", i);
+		hd_devp[i]->lll_device = device_create(huadeng_class, NULL, first_dev_num, NULL, "huadeng%d", i);
 	}
 	return 0;
+
+out_err:
+	llaolao_cleanup_devs();
+	return -1;
 }
 
 
-
-static void llaolao_cleanup_devs( void )
-{
-	int i;
-
-	struct huadeng_dev* pdev;
-	for ( i = 0; i < NUM_DEVICES; ++i ) {
-		if (hd_devp[i]) {
-			cdev_del(&hd_devp[i]->lll_cdev);
-			device_del(hd_devp[i]->lll_device);
-		}
-		kfree(hd_devp[i]);
-	}
-}
 
 
 
