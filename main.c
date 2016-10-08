@@ -12,6 +12,8 @@
 #include <linux/device.h>
 #include <asm/uaccess.h> 
 
+#include "huadeng.h"
+
 #define DEV_DATA_LENGTH  100
 #define NUM_DEVICES      6
 #define DEVICE_NAME      "huadeng"
@@ -28,6 +30,7 @@ struct huadeng_dev {
 	struct device* lll_device;
 	char name[10];                /* name of the device */
 	char data[DEV_DATA_LENGTH];
+	int luminance;
 } *hd_devp[NUM_DEVICES];
 
 
@@ -78,11 +81,60 @@ static int lll_proc_open(struct inode* inode, struct file *file )
     return single_open( file, lll_proc_show, NULL );
 }
 
+
+static long
+lll_ioctl( struct file *file, unsigned int cmd, unsigned long arg)
+{
+	long retval = 0;
+	int tmp = 0;
+	struct huadeng_dev *hd_devp = file->private_data;
+	pr_info("%s \n", __func__ );
+	pr_info("%s cmd 0x%x arg %lx, luminance %d\n",
+			__func__, cmd, arg, hd_devp->luminance);
+	switch(cmd) {
+		case HUADENG_IOCRESET:
+			hd_devp->luminance = HUADENG_LUMINANCE;
+			break;
+		case HUADENG_IOCSLUMINANCE: /* Set: arg points to the value */
+			if (! capable (CAP_SYS_ADMIN))
+				return -EPERM;
+			retval = __get_user(hd_devp->luminance, (int __user *)arg);
+			break;
+
+		case HUADENG_IOCTLUMINANCE: /* Tell: arg is the value */
+			if (! capable (CAP_SYS_ADMIN))
+				return -EPERM;
+			hd_devp->luminance = arg;
+			break;
+		case HUADENG_IOCGLUMINANCE: /* Get: arg is pointer to result */
+			retval = __put_user(hd_devp->luminance, (int __user *)arg);
+			break;
+		case HUADENG_IOCQLUMINANCE: /* Query: return it (it's positive) */
+			return hd_devp->luminance;
+		case HUADENG_IOCXLUMINANCE: /* eXchange: use arg as pointer */
+			if (! capable (CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = hd_devp->luminance;
+			retval = __get_user(hd_devp->luminance, (int __user *)arg);
+			if (retval == 0)
+				retval = __put_user(tmp, (int __user *)arg);
+			break;
+		case HUADENG_IOCHLUMINANCE: /* sHift: like Tell + Query */
+			if (! capable (CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = hd_devp->luminance;
+			hd_devp->luminance = arg;
+			return tmp;
+		default: /* redundant, as cmd was checked against MAXNR */
+			return -ENOTTY;
+	}
+	return retval;
+}
 static const struct file_operations lll_proc_fops = {
     .open = lll_proc_open,
     .read = seq_read,
     .llseek = seq_lseek,
-    .release = single_release
+    .release = single_release,
 };
 
 /**********************debugfs lab ********************************************/
@@ -120,7 +172,6 @@ static int huadeng_open(struct inode *inode, struct file *file )
 {
 	struct huadeng_dev *hd_devp;
 	pr_info("%s\n", __func__);
-	printk("i'm being openned!\n" );
 
 	/* Get the per-device structure that contains this cdev */
 	hd_devp = container_of(inode->i_cdev, struct huadeng_dev, lll_cdev );
@@ -179,6 +230,7 @@ static ssize_t huadeng_write(struct file *file, const char *buffer, size_t lengt
 
 static int huadeng_release(struct inode *inode, struct file* file )
 {
+	pr_info( "%s\n", __func__ );
 	return 0;
 }
 
@@ -188,6 +240,7 @@ struct file_operations huadeng_fops = {
 	.release = huadeng_release,
 	.read    = huadeng_read,
 	.write   = huadeng_write,
+	.unlocked_ioctl = lll_ioctl,
 };
 
 
@@ -203,6 +256,9 @@ static void llaolao_cleanup_devs( void )
 		kfree(hd_devp[i]);
 	}
 }
+
+
+
 
 static int __init llaolao_init(void)
 {
